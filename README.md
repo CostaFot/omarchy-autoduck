@@ -1,5 +1,7 @@
 # Autoduck
 
+<img src="assets/duck.png" width="200" alt="the enforcer">
+
 An [Omarchy](https://omarchy.org) shell plugin that mutes your background
 browser music while another browser tab plays audio, and unmutes it when
 that audio stops. Music in a YouTube tab, you click a video on X — the
