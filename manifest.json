@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "costafot.autoduck",
+  "name": "Autoduck",
+  "version": "0.1.0",
+  "author": "CostaFot",
+  "license": "MIT",
+  "description": "Automatically mutes background browser music (e.g. a YouTube tab) while another browser tab plays audio, and unmutes it when that audio stops.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Autoduck",
+    "description": "Status icon and on/off toggle for automatic browser music ducking",
+    "category": "Audio",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
