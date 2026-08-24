@@ -3,8 +3,14 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Pipewire
 
-// Autoduck: while a browser tab is playing music, mute it whenever a second
-// browser tab starts producing audio, and unmute it once that audio stops.
+// Autoduck: while a browser tab is playing music, mute it whenever another
+// browser tab starts actually producing sound, and unmute it once that sound
+// has stopped.
+//
+// Detection is loudness-based (PwNodePeakMonitor), not stream-based: muted
+// autoplay videos open silent PipeWire streams and must not trigger ducking,
+// and some sites (e.g. X) keep their stream open for seconds after the video
+// stops, so stream existence is wrong in both directions.
 //
 // Only streams whose application.name is in `browserApps` participate, as
 // music or as trigger. Games, VoIP, system sounds, and every other audio
@@ -23,18 +29,24 @@ Item {
     "Microsoft Edge", "microsoft-edge",
     "Firefox", "firefox", "LibreWolf", "librewolf", "Zen"
   ]
-  // How long the other tab must stay silent before music resumes.
-  property int resumeDelayMs: 2000
+  // Peak level (0..1) above which a stream counts as audibly playing.
+  property real peakThreshold: 0.01
+  // Music resumes after the other tab has been this quiet for this long...
+  property int silenceMs: 2500
+  // ...or this long after its stream corked or closed (definitive stop).
+  property int stopConfirmMs: 800
 
   // --- State ------------------------------------------------------------
   property bool enabled: true
   property var duckedNode: null
   readonly property bool ducked: duckedNode !== null
+  property double lastLoudAt: 0
+  property double lastOthersUncorkedAt: 0
 
   readonly property var nodes: Pipewire.nodes ? Pipewire.nodes.values : []
 
-  // Browser playback streams, bound so their properties and audio state
-  // stay live and audio.muted is writable.
+  // Browser playback streams, oldest first. Bound via PwObjectTracker so
+  // their properties stay live and audio.muted is writable.
   readonly property var browserStreams: {
     var out = []
     for (var i = 0; i < nodes.length; i++) {
@@ -48,6 +60,18 @@ Item {
     return out
   }
 
+  // The background music is the oldest browser stream (it started first);
+  // while ducked, it stays whatever we muted.
+  readonly property var musicNode: duckedNode
+    || ((browserStreams || []).length > 0 ? browserStreams[0] : null)
+
+  // Every other browser stream is a potential interrupter. Their loudness is
+  // watched whenever the plugin is enabled and music exists.
+  readonly property var otherStreams: {
+    var music = musicNode
+    return (browserStreams || []).filter(function (n) { return n !== music })
+  }
+
   PwObjectTracker { objects: root.browserStreams }
 
   function serialOf(node) {
@@ -55,59 +79,36 @@ Item {
     return isNaN(serial) ? Number(node.id || 0) : serial
   }
 
-  // A stream that exists but is corked (paused media element) is not
-  // producing audio; only uncorked streams matter.
-  function isAudible(node) {
+  function isUncorked(node) {
     if (!node || !node.ready) return false
     var corked = (node.properties || {})["pulse.corked"]
     return !(corked === true || corked === "true")
-  }
-
-  function audibleStreams() {
-    return (browserStreams || []).filter(isAudible)
   }
 
   function nodeAlive(node) {
     return node !== null && (browserStreams || []).indexOf(node) !== -1
   }
 
-  function evaluate() {
-    if (!enabled) return
+  // Called with the current peak of one interrupter stream.
+  function onOtherStreamPeak(level) {
+    if (!enabled || level < peakThreshold) return
+    lastLoudAt = Date.now()
+    if (!duckedNode) duck()
+  }
 
-    if (duckedNode && !nodeAlive(duckedNode)) {
-      // Music tab was closed or its stream ended while ducked.
-      duckedNode = null
-      resumeTimer.stop()
-    }
-
-    var active = audibleStreams()
-
-    if (duckedNode) {
-      var others = active.filter(function (n) { return n !== duckedNode })
-      if (others.length === 0) {
-        if (!resumeTimer.running) resumeTimer.start()
-      } else {
-        resumeTimer.stop()
-      }
-      return
-    }
-
-    // Two browser tabs audible at once: the older stream is the background
-    // music, the newer one is what the user just started watching.
-    if (active.length >= 2) {
-      var music = active[0]
-      if (music.audio) {
-        music.audio.muted = true
-        duckedNode = music
-      }
-    }
+  function duck() {
+    var music = musicNode
+    if (!music || !isUncorked(music) || !music.audio) return
+    music.audio.muted = true
+    duckedNode = music
+    lastLoudAt = Date.now()
+    lastOthersUncorkedAt = Date.now()
   }
 
   function unduck() {
     if (duckedNode && nodeAlive(duckedNode) && duckedNode.audio)
       duckedNode.audio.muted = false
     duckedNode = null
-    resumeTimer.stop()
   }
 
   function setEnabled(on) {
@@ -121,26 +122,39 @@ Item {
     return enabled ? "enabled" : "disabled"
   }
 
-  onNodesChanged: evaluate()
   Component.onDestruction: unduck()
 
-  Timer {
-    id: resumeTimer
-    interval: root.resumeDelayMs
-    repeat: false
-    onTriggered: {
-      var others = root.audibleStreams().filter(function (n) { return n !== root.duckedNode })
-      if (others.length === 0) root.unduck()
+  // One peak monitor per interrupter stream. A monitor emits peakChanged
+  // frequently while its stream renders audio, so ducking reacts in well
+  // under a second.
+  Instantiator {
+    model: root.enabled ? root.otherStreams : []
+    delegate: PwNodePeakMonitor {
+      required property var modelData
+      node: modelData
+      enabled: true
+      onPeakChanged: root.onOtherStreamPeak(peak)
     }
   }
 
-  // pulse.corked changes don't retrigger declarative bindings reliably, so
-  // poll cheaply (in-process property reads) while browser audio exists.
+  // While ducked, decide when to resume.
   Timer {
-    interval: 1000
+    interval: 300
     repeat: true
-    running: root.enabled && (root.browserStreams.length > 0 || root.ducked)
-    onTriggered: root.evaluate()
+    running: root.ducked
+    onTriggered: {
+      if (!root.nodeAlive(root.duckedNode)) {
+        // Music tab was closed or its stream ended while ducked.
+        root.duckedNode = null
+        return
+      }
+      var now = Date.now()
+      var uncorkedOthers = root.otherStreams.filter(root.isUncorked)
+      if (uncorkedOthers.length > 0) root.lastOthersUncorkedAt = now
+      if (now - root.lastOthersUncorkedAt > root.stopConfirmMs
+          || now - root.lastLoudAt > root.silenceMs)
+        root.unduck()
+    }
   }
 
   IpcHandler {
@@ -151,7 +165,7 @@ Item {
         enabled: root.enabled,
         ducked: root.ducked,
         browserStreams: root.browserStreams.length,
-        audible: root.audibleStreams().length
+        watching: root.otherStreams.length
       })
     }
     function enable(): string { root.setEnabled(true); return "enabled" }

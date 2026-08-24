@@ -13,14 +13,21 @@ sound starts, and unmutes a few seconds after the video pauses or ends.
 
 Every browser tab that produces sound is a separate PipeWire stream. The
 plugin's service watches those streams from inside `omarchy-shell` (via
-Quickshell's native PipeWire bindings — no daemons, no polling subprocesses):
+Quickshell's native PipeWire bindings — no daemons, no polling subprocesses),
+and detection is **loudness-based**: each non-music browser stream gets a peak
+monitor, because stream existence lies in both directions — muted autoplay
+videos open silent streams, and some sites (X) keep their stream open for
+seconds after playback stops.
 
-- When two browser streams are audible at once, the **older** stream is taken
-  to be your background music and gets muted at the PipeWire level.
-- When every other browser stream has been silent (paused, ended, or closed)
-  for a couple of seconds, the music stream is unmuted.
-- Muted autoplay videos (like X's scroll-by previews) never trigger it,
-  because they don't produce an audible stream.
+- The **oldest** browser stream is taken to be your background music (it
+  started first).
+- The moment any other browser stream is actually loud, the music is muted at
+  the PipeWire level (well under a second).
+- The music is unmuted once every other browser stream has been quiet for
+  `silenceMs` (default 2.5 s), or shortly after they all cork/close
+  (`stopConfirmMs`, default 0.8 s) — whichever comes first.
+- Muted autoplay videos (like X's scroll-by previews) never trigger it: their
+  streams exist but stay silent.
 
 Only streams belonging to a browser (`application.name` allowlist, see
 `browserApps` in `Service.qml`) participate — as music or as trigger. Games,
@@ -58,9 +65,13 @@ save):
 
 - `browserApps` — which `application.name`s count as browsers. Defaults cover
   Brave, Chromium/Chrome, Vivaldi, Edge, Firefox, LibreWolf, and Zen.
-- `resumeDelayMs` — how long the other tab must stay silent before music
-  resumes (default 2000 ms). This also stops the mute from flapping while you
-  scroll from one video to the next.
+- `peakThreshold` — loudness (0..1) above which a stream counts as playing
+  (default 0.01).
+- `silenceMs` — how long the other tab must stay quiet before music resumes
+  (default 2500 ms). Also stops flapping while you scroll between videos.
+  Raise it if videos with long silent passages bounce your music back in.
+- `stopConfirmMs` — resume delay after every other stream has corked or
+  closed outright (default 800 ms).
 
 ## Notes and limitations
 
@@ -71,6 +82,7 @@ save):
   is the only reliable per-tab control: Chromium exposes a single MPRIS
   player for the whole browser and reassigns it to whatever media you
   interacted with last, so pause/play cannot be targeted at a specific tab.
-- Chromium browsers keep a paused tab's stream around (corked) for ~5
-  seconds. Resume latency is typically 2–4 s after the video actually
-  pauses; up to ~7 s if the tab is closed outright.
+- Resume latency is typically 1–3 s after the other tab's sound actually
+  stops, independent of how long the site keeps its audio stream open.
+- A video you keep watching that goes fully silent for longer than
+  `silenceMs` will briefly bring the music back until its sound resumes.
