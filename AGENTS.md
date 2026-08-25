@@ -30,7 +30,12 @@ only while enabled); a peak above `peakThreshold` counts as audibly playing.
 - While ducked, a 300 ms timer decides when to resume: every other stream
   quiet for `silenceMs` (2500 ms), or `stopConfirmMs` (800 ms) after they
   have all corked (`pulse.corked`) or closed — whichever comes first.
-- If the music stream itself disappears while ducked, state just resets.
+- If the music stream itself disappears while ducked, unmute is still
+  attempted, because PipeWire's stream-restore persists mute per
+  `application.name` — a mute left behind resurrects on every future stream
+  of that app (born muted). As a safety net for shell crashes, any browser
+  stream that shows up already muted is unmuted once (leftover duck; browsers
+  never create their own streams muted).
 - Music is muted, not paused: Chromium exposes a single MPRIS player for the
   whole browser and reassigns it to the last-interacted media, so pause
   cannot be targeted at a specific tab.
@@ -41,5 +46,5 @@ only while enabled); a peak above `peakThreshold` counts as audibly playing.
 `toggle` — surfaced as `omarchy-shell autoduck <cmd>`.
 
 Config properties (`browserApps`, `peakThreshold`, `silenceMs`,
-`stopConfirmMs`) sit at the top of `Service.qml`; the shell hot-reloads on
-save.
+`stopConfirmMs`) sit at the top of `Service.qml`. The shell does NOT reliably hot-reload the
+symlinked plugin on save — run `omarchy-restart-shell` to load new code.

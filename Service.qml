@@ -42,6 +42,8 @@ Item {
   readonly property bool ducked: duckedNode !== null
   property double lastLoudAt: 0
   property double lastOthersUncorkedAt: 0
+  // Streams (by serial) already checked for a leftover restored mute.
+  property var healedSerials: ({})
 
   readonly property var nodes: Pipewire.nodes ? Pipewire.nodes.values : []
 
@@ -106,9 +108,12 @@ Item {
   }
 
   function unduck() {
-    if (duckedNode && nodeAlive(duckedNode) && duckedNode.audio)
-      duckedNode.audio.muted = false
+    var n = duckedNode
     duckedNode = null
+    // Best-effort even if the stream already left the list: stream-restore
+    // persists mute per application.name, so a mute left behind here would
+    // resurrect on every future stream of that app.
+    try { if (n && n.audio) n.audio.muted = false } catch (e) {}
   }
 
   function setEnabled(on) {
@@ -137,6 +142,34 @@ Item {
     }
   }
 
+  // Safety net: stream-restore remembers mute per application.name, so a
+  // stream lost while ducked (tab closed mid-duck, shell crash) leaves every
+  // future stream of that app born muted. Browsers never create their own
+  // streams muted, so a browser stream that shows up already muted is a
+  // leftover duck: clear it. Checked once per stream, polling briefly
+  // because the restored mute can land moments after the node appears.
+  Instantiator {
+    model: root.browserStreams
+    delegate: Timer {
+      required property var modelData
+      property int tries: 0
+      interval: 250
+      running: true
+      repeat: true
+      onTriggered: {
+        var n = modelData
+        if (++tries > 8 || !root.nodeAlive(n)) { running = false; return }
+        if (!n.ready || !n.audio) return
+        var serial = root.serialOf(n)
+        if (!root.healedSerials[serial]) {
+          root.healedSerials[serial] = true
+          if (n !== root.duckedNode && n.audio.muted) n.audio.muted = false
+        }
+        running = false
+      }
+    }
+  }
+
   // While ducked, decide when to resume.
   Timer {
     interval: 300
@@ -144,8 +177,9 @@ Item {
     running: root.ducked
     onTriggered: {
       if (!root.nodeAlive(root.duckedNode)) {
-        // Music tab was closed or its stream ended while ducked.
-        root.duckedNode = null
+        // Music tab was closed or its stream ended while ducked. Still try
+        // to clear the mute: stream-restore persists it per app otherwise.
+        root.unduck()
         return
       }
       var now = Date.now()
